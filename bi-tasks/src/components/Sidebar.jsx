@@ -62,7 +62,27 @@ export default function Sidebar({ profile, view, setView, session, open, onClose
               <div style={{ color: 'rgba(255,255,255,0.6)', fontSize: 11, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{session.user.email}</div>
             </div>
           </div>
-          <button onClick={logout} style={{ width: '100%', padding: '8px', borderRadius: 6, background: 'rgba(255,255,255,0.12)', color: '#ffffff', fontSize: 12 }}>Выйти</button>
+<button
+  onClick={() => setView('profile')}
+  style={{
+    width: '100%', padding: '7px', borderRadius: 5,
+    background: 'rgba(255,184,28,0.15)', color: '#FFB81C',
+    border: '1px solid rgba(255,184,28,0.3)',
+    fontSize: 11, fontWeight: 700, cursor: 'pointer',
+    fontFamily: 'Montserrat, sans-serif', marginBottom: 6
+  }}
+>
+  Мой профиль
+</button>
+<button onClick={logout} style={{
+  width: '100%', padding: '7px', borderRadius: 5,
+  background: 'rgba(255,255,255,0.08)', color: '#fff',
+  border: '1px solid rgba(255,255,255,0.2)',
+  fontSize: 11, fontWeight: 600, cursor: 'pointer',
+  fontFamily: 'Montserrat, sans-serif'
+}}>
+  Выйти
+</button>
         </div>
       </aside>
 
