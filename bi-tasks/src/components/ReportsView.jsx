@@ -1,150 +1,148 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 
-export default function ProfileView({ profile, session, onSaved }) {
-  const [form, setForm] = useState({
-    full_name: profile.full_name || '',
-    dept: profile.dept || '',
-  })
-  const [pw, setPw] = useState('')
-  const [pw2, setPw2] = useState('')
-  const [saving, setSaving] = useState(false)
-  const [msg, setMsg] = useState('')
-  const [err, setErr] = useState('')
+export default function ReportsView({ profile }) {
+  const [data, setData] = useState(null)
+  const [loading, setLoading] = useState(true)
 
-  const initials = form.full_name
-    ? form.full_name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()
-    : session.user.email[0].toUpperCase()
-
-  const RL = { chief: 'Руководитель', manager: 'Менеджер', specialist: 'Специалист' }
-
-  async function save() {
-    setErr(''); setMsg('')
-    if (pw && pw !== pw2) { setErr('Пароли не совпадают'); return }
-    if (pw && pw.length < 6) { setErr('Пароль минимум 6 символов'); return }
-    setSaving(true)
-
-    // Update profile name
-    const { error: profileError } = await supabase
-      .from('profiles')
-      .update({ full_name: form.full_name })
-      .eq('id', profile.id)
-
-    if (profileError) { setErr('Ошибка сохранения профиля'); setSaving(false); return }
-
-    // Update password if provided
-    if (pw) {
-      const { error: pwError } = await supabase.auth.updateUser({ password: pw })
-      if (pwError) { setErr('Ошибка смены пароля: ' + pwError.message); setSaving(false); return }
+  useEffect(() => {
+    async function load() {
+      const [{ data: projects }, { data: tasks }, { data: profiles }, { data: steps }] = await Promise.all([
+        supabase.from('projects').select('*'),
+        supabase.from('tasks').select('*'),
+        supabase.from('profiles').select('*').neq('role', 'chief'),
+        supabase.from('steps').select('*'),
+      ])
+      setData({ projects: projects || [], tasks: tasks || [], profiles: profiles || [], steps: steps || [] })
+      setLoading(false)
     }
+    load()
+  }, [])
 
-    setMsg('✓ Данные успешно сохранены')
-    setPw(''); setPw2('')
-    setSaving(false)
-    if (onSaved) onSaved(form.full_name)
-  }
+  if (loading) return <div style={{ color: '#8fa3bb', textAlign: 'center', paddingTop: 40 }}>Загрузка...</div>
+
+  const { projects, tasks, profiles, steps } = data
+  const today = new Date().toISOString().slice(0, 10)
+
+  const totalTasks = tasks.length
+  const doneTasks = tasks.filter(t => t.status === 'done').length
+  const overdue = tasks.filter(t => t.deadline && t.deadline < today && t.status !== 'done').length
+  const totalSteps = steps.length
+  const doneSteps = steps.filter(s => s.done).length
+  const overallPct = totalSteps ? Math.round(doneSteps / totalSteps * 100) : 0
+
+  const managerStats = profiles.map(m => {
+    const mt = tasks.filter(t => t.assignee_id === m.id)
+    const ms = steps.filter(s => mt.some(t => t.id === s.task_id))
+    const mDone = ms.filter(s => s.done).length
+    const mOverdue = mt.filter(t => t.deadline && t.deadline < today && t.status !== 'done').length
+    const pct = ms.length ? Math.round(mDone / ms.length * 100) : 0
+    const initials = m.full_name ? m.full_name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase() : '?'
+    return { ...m, initials, taskCount: mt.length, stepTotal: ms.length, stepDone: mDone, overdue: mOverdue, pct }
+  }).sort((a, b) => b.pct - a.pct)
+
+  const byPriority = ['critical', 'high', 'medium', 'low'].map(pr => ({
+    pr,
+    count: tasks.filter(t => t.priority === pr && t.status !== 'done').length,
+    label: { critical: 'Критический', high: 'Высокий', medium: 'Средний', low: 'Низкий' }[pr],
+    color: { critical: '#991b1b', high: '#92400e', medium: '#1e40af', low: '#475569' }[pr],
+    bg: { critical: '#fee2e2', high: '#fef3c7', medium: '#dbeafe', low: '#f1f5f9' }[pr],
+  }))
 
   return (
     <div>
       <div style={{ marginBottom: 24 }}>
-        <h1 style={{ fontSize: 24, fontWeight: 400, color: '#0A2540', marginBottom: 4 }}>Мой профиль</h1>
-        <p style={{ fontSize: 14, color: '#8fa3bb' }}>Личные данные и настройки безопасности</p>
+        <h1 style={{ fontSize: 24, fontWeight: 400, color: '#0A2540', marginBottom: 4 }}>Отчёты и аналитика</h1>
+        <p style={{ fontSize: 14, color: '#8fa3bb' }}>Общая картина по всем проектам</p>
       </div>
 
-      <div style={{ maxWidth: 500 }}>
-        {/* Avatar block */}
-        <div style={{ background: '#fff', border: '0.5px solid rgba(10,37,64,0.1)', borderRadius: 10, padding: '24px', marginBottom: 16, textAlign: 'center', boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
-          <div style={{
-            width: 72, height: 72, borderRadius: '50%', background: '#1a6b8a',
-            color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontSize: 26, fontWeight: 700, margin: '0 auto 12px',
-          }}>{initials}</div>
-          <div style={{ fontSize: 18, fontWeight: 700, color: '#0A2540' }}>{form.full_name || 'Пользователь'}</div>
-          <div style={{ fontSize: 12, color: '#8fa3bb', marginTop: 4 }}>
-            {RL[profile.role] || 'Сотрудник'} · {session.user.email}
+      {/* KPI */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,minmax(0,1fr))', gap: 12, marginBottom: 24 }}>
+        {[
+          { label: 'Всего проектов',  value: projects.length,          color: '#0A2540' },
+          { label: 'Задач открыто',   value: totalTasks - doneTasks,   color: '#1a6b8a' },
+          { label: 'Просрочено',      value: overdue,                  color: overdue > 0 ? '#dc2626' : '#1a9e6e' },
+          { label: 'Общий прогресс',  value: overallPct + '%',         color: '#1a9e6e' },
+        ].map(k => (
+          <div key={k.label} style={{ background: '#fff', border: '0.5px solid rgba(10,37,64,0.1)', borderRadius: 10, padding: '16px 18px', boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
+            <div style={{ fontSize: 11, color: '#8fa3bb', marginBottom: 6, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{k.label}</div>
+            <div style={{ fontSize: 26, fontWeight: 300, color: k.color }}>{k.value}</div>
           </div>
+        ))}
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, alignItems: 'start' }}>
+
+        {/* Сотрудники */}
+        <div style={{ background: '#fff', border: '0.5px solid rgba(10,37,64,0.1)', borderRadius: 10, overflow: 'hidden', boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
+          <div style={{ padding: '14px 18px', borderBottom: '0.5px solid rgba(10,37,64,0.07)', fontSize: 14, fontWeight: 700, color: '#0A2540' }}>
+            Загрузка сотрудников
+          </div>
+          {managerStats.length === 0 ? (
+            <div style={{ padding: 24, textAlign: 'center', color: '#8fa3bb', fontSize: 13 }}>Нет данных</div>
+          ) : managerStats.map(m => (
+            <div key={m.id} style={{ padding: '12px 18px', borderBottom: '0.5px solid rgba(10,37,64,0.05)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                <div style={{ width: 28, height: 28, borderRadius: '50%', background: '#1a6b8a', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 700, flexShrink: 0 }}>
+                  {m.initials}
+                </div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: '#0A2540' }}>{m.full_name}</div>
+                  <div style={{ fontSize: 11, color: '#8fa3bb' }}>
+                    {m.taskCount} задач · {m.stepDone}/{m.stepTotal} шагов
+                    {m.overdue > 0 && <span style={{ color: '#dc2626' }}> · {m.overdue} просроч.</span>}
+                  </div>
+                </div>
+                <span style={{ fontSize: 13, fontWeight: 700, color: m.pct >= 70 ? '#1a9e6e' : m.pct >= 30 ? '#d97706' : '#4a6080' }}>
+                  {m.pct}%
+                </span>
+              </div>
+              <div style={{ height: 5, background: '#f1f5f9', borderRadius: 99, overflow: 'hidden' }}>
+                <div style={{ height: '100%', borderRadius: 99, width: m.pct + '%', background: m.pct >= 70 ? '#1a9e6e' : m.pct >= 30 ? '#d97706' : '#1a6b8a', transition: 'width 0.4s' }} />
+              </div>
+            </div>
+          ))}
         </div>
 
-        {/* Form */}
-        <div style={{ background: '#fff', border: '0.5px solid rgba(10,37,64,0.1)', borderRadius: 10, padding: '24px', boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
-          <div style={{ marginBottom: 14 }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: '#0A2540', marginBottom: 14, paddingBottom: 10, borderBottom: '0.5px solid rgba(10,37,64,0.07)' }}>
-              Личные данные
-            </div>
-            <div style={{ marginBottom: 12 }}>
-              <label style={lbl}>Имя</label>
-              <input
-                value={form.full_name}
-                onChange={e => setForm(f => ({ ...f, full_name: e.target.value }))}
-                placeholder="Ваше имя"
-                style={inp}
-              />
-            </div>
-            <div style={{ marginBottom: 12 }}>
-              <label style={lbl}>Email</label>
-              <input
-                value={session.user.email}
-                disabled
-                style={{ ...inp, background: '#f1f5f9', color: '#8fa3bb', cursor: 'not-allowed' }}
-              />
-              <div style={{ fontSize: 11, color: '#8fa3bb', marginTop: 4 }}>Email изменить нельзя</div>
-            </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {/* Приоритеты */}
+          <div style={{ background: '#fff', border: '0.5px solid rgba(10,37,64,0.1)', borderRadius: 10, padding: '16px 18px', boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: '#0A2540', marginBottom: 14 }}>Задачи по приоритету</div>
+            {byPriority.map(p => (
+              <div key={p.pr} style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+                <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 4, fontWeight: 600, background: p.bg, color: p.color, minWidth: 88, textAlign: 'center' }}>{p.label}</span>
+                <div style={{ flex: 1, height: 7, background: '#f1f5f9', borderRadius: 99, overflow: 'hidden' }}>
+                  <div style={{ height: '100%', borderRadius: 99, background: p.color, width: totalTasks ? (p.count / totalTasks * 100) + '%' : '0%', transition: 'width 0.4s' }} />
+                </div>
+                <span style={{ fontSize: 13, fontWeight: 600, color: '#4a6080', minWidth: 20, textAlign: 'right' }}>{p.count}</span>
+              </div>
+            ))}
           </div>
 
-          <div style={{ marginBottom: 14 }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: '#0A2540', marginBottom: 14, paddingBottom: 10, borderBottom: '0.5px solid rgba(10,37,64,0.07)' }}>
-              Смена пароля
-            </div>
-            <div style={{ marginBottom: 12 }}>
-              <label style={lbl}>Новый пароль</label>
-              <input
-                type="password"
-                value={pw}
-                onChange={e => setPw(e.target.value)}
-                placeholder="Минимум 6 символов"
-                style={inp}
-              />
-            </div>
-            <div style={{ marginBottom: 12 }}>
-              <label style={lbl}>Повторите пароль</label>
-              <input
-                type="password"
-                value={pw2}
-                onChange={e => setPw2(e.target.value)}
-                placeholder="Повторите новый пароль"
-                style={inp}
-              />
-            </div>
+          {/* Проекты */}
+          <div style={{ background: '#fff', border: '0.5px solid rgba(10,37,64,0.1)', borderRadius: 10, overflow: 'hidden', boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
+            <div style={{ padding: '14px 18px', borderBottom: '0.5px solid rgba(10,37,64,0.07)', fontSize: 14, fontWeight: 700, color: '#0A2540' }}>Прогресс проектов</div>
+            {projects.length === 0 ? (
+              <div style={{ padding: 24, textAlign: 'center', color: '#8fa3bb', fontSize: 13 }}>Проектов нет</div>
+            ) : projects.map((p, i) => {
+              const pt = tasks.filter(t => t.project_id === p.id)
+              const ps = steps.filter(s => pt.some(t => t.id === s.task_id))
+              const pct = ps.length ? Math.round(ps.filter(s => s.done).length / ps.length * 100) : 0
+              return (
+                <div key={p.id} style={{ padding: '12px 18px', borderBottom: i < projects.length - 1 ? '0.5px solid rgba(10,37,64,0.05)' : 'none' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+                    <span style={{ fontSize: 13, fontWeight: 600, color: '#0A2540' }}>{p.name}</span>
+                    <span style={{ fontSize: 12, color: '#8fa3bb', fontWeight: 600 }}>{pct}%</span>
+                  </div>
+                  <div style={{ height: 5, background: '#f1f5f9', borderRadius: 99, overflow: 'hidden' }}>
+                    <div style={{ height: '100%', borderRadius: 99, width: pct + '%', background: pct === 100 ? '#1a9e6e' : '#1a6b8a', transition: 'width 0.4s' }} />
+                  </div>
+                </div>
+              )
+            })}
           </div>
-
-          {err && (
-            <div style={{ background: '#fee2e2', color: '#991b1b', fontSize: 12, fontWeight: 600, padding: '8px 12px', borderRadius: 6, marginBottom: 12 }}>
-              {err}
-            </div>
-          )}
-          {msg && (
-            <div style={{ background: '#e6f7f1', color: '#085041', fontSize: 12, fontWeight: 600, padding: '8px 12px', borderRadius: 6, marginBottom: 12 }}>
-              {msg}
-            </div>
-          )}
-
-          <button
-            onClick={save}
-            disabled={saving}
-            style={{
-              width: '100%', background: '#FFB81C', color: '#0A2540',
-              border: 'none', borderRadius: 6, padding: '10px',
-              fontSize: 13, fontWeight: 700, cursor: saving ? 'not-allowed' : 'pointer',
-              fontFamily: 'Montserrat, sans-serif',
-            }}
-          >
-            {saving ? 'Сохранение...' : 'Сохранить изменения'}
-          </button>
         </div>
       </div>
     </div>
   )
 }
-
-const lbl = { fontSize: 11, color: '#8fa3bb', display: 'block', marginBottom: 5, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }
-const inp = { width: '100%', padding: '8px 11px', border: '1.5px solid rgba(10,37,64,0.15)', borderRadius: 6, fontSize: 13, color: '#0A2540', background: '#f9fafb', fontFamily: 'Montserrat, sans-serif', outline: 'none', boxSizing: 'border-box' }
