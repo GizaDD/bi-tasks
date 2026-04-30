@@ -3,52 +3,87 @@ import { supabase } from '../lib/supabase'
 
 const PRI = {
   low:      { label: 'Низкий',      bg: '#f1f5f9', color: '#64748b' },
-  medium:   { label: 'Средний',     bg: 'var(--blue-bg)',  color: 'var(--blue)'  },
-  high:     { label: 'Высокий',     bg: 'var(--amber-bg)', color: 'var(--amber)' },
-  critical: { label: 'Критический', bg: 'var(--red-bg)',   color: 'var(--red)'   },
+  medium:   { label: 'Средний',     bg: '#dbeafe',  color: '#1e40af' },
+  high:     { label: 'Высокий',     bg: '#fef3c7',  color: '#92400e' },
+  critical: { label: 'Критический', bg: '#fee2e2',  color: '#991b1b' },
 }
 
 export default function ProjectDetail({ project, profile, onBack }) {
   const [tasks, setTasks] = useState([])
+  const [managers, setManagers] = useState([])
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
   const [expandedTask, setExpandedTask] = useState(null)
-  const [form, setForm] = useState({ title: '', description: '', priority: 'medium', deadline: '' })
+  const [form, setForm] = useState({ title: '', description: '', priority: 'medium', deadline: '', assignee_id: '' })
   const [draftSteps, setDraftSteps] = useState([])
   const [stepInput, setStepInput] = useState('')
   const [saving, setSaving] = useState(false)
 
-  useEffect(() => { loadTasks() }, [project.id])
+  useEffect(() => {
+    loadTasks()
+    loadManagers()
+  }, [project.id])
 
   async function loadTasks() {
     setLoading(true)
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('tasks')
-      .select('*, steps(*), profiles(full_name), comments(*, profiles(full_name)), files(*)')
+      .select(`
+        *,
+        steps (*),
+        assignee:profiles!tasks_assignee_id_fkey (id, full_name),
+        comments (*, author:profiles!comments_author_id_fkey (full_name))
+      `)
       .eq('project_id', project.id)
       .order('created_at', { ascending: false })
+    if (error) console.error('loadTasks error:', error)
     setTasks(data || [])
     setLoading(false)
   }
 
+  async function loadManagers() {
+    const { data } = await supabase.from('profiles').select('id, full_name').neq('role', 'chief')
+    setManagers(data || [])
+  }
+
   async function toggleStep(stepId, done) {
     await supabase.from('steps').update({ done: !done }).eq('id', stepId)
-    setTasks(prev => prev.map(t => ({ ...t, steps: t.steps.map(s => s.id === stepId ? { ...s, done: !done } : s) })))
+    setTasks(prev => prev.map(t => ({
+      ...t,
+      steps: (t.steps || []).map(s => s.id === stepId ? { ...s, done: !done } : s)
+    })))
   }
 
   async function createTask() {
     if (!form.title.trim()) return
     setSaving(true)
-    const { data: task } = await supabase.from('tasks').insert({
-      project_id: project.id, title: form.title, description: form.description,
-      priority: form.priority, deadline: form.deadline || null,
-      assignee_id: project.manager_id, author_id: profile.id, status: 'active',
+    const assigneeId = form.assignee_id || project.manager_id
+    const { data: task, error } = await supabase.from('tasks').insert({
+      project_id: project.id,
+      title: form.title,
+      description: form.description,
+      priority: form.priority,
+      deadline: form.deadline || null,
+      assignee_id: assigneeId,
+      author_id: profile.id,
+      status: 'active',
     }).select().single()
+    if (error) { console.error('createTask error:', error); setSaving(false); return }
     if (task && draftSteps.length > 0) {
-      await supabase.from('steps').insert(draftSteps.map((title, i) => ({ task_id: task.id, title, order: i, done: false })))
+      await supabase.from('steps').insert(
+        draftSteps.map((title, i) => ({ task_id: task.id, title, order: i, done: false }))
+      )
     }
-    setForm({ title: '', description: '', priority: 'medium', deadline: '' })
-    setDraftSteps([]); setShowForm(false); setSaving(false)
+    setForm({ title: '', description: '', priority: 'medium', deadline: '', assignee_id: '' })
+    setDraftSteps([])
+    setShowForm(false)
+    setSaving(false)
+    loadTasks()
+  }
+
+  async function addComment(taskId, body) {
+    if (!body.trim()) return
+    await supabase.from('comments').insert({ task_id: taskId, author_id: profile.id, body })
     loadTasks()
   }
 
@@ -56,7 +91,6 @@ export default function ProjectDetail({ project, profile, onBack }) {
     if (!confirm('Удалить задачу?')) return
     await supabase.from('steps').delete().eq('task_id', taskId)
     await supabase.from('comments').delete().eq('task_id', taskId)
-    await supabase.from('files').delete().eq('task_id', taskId)
     await supabase.from('tasks').delete().eq('id', taskId)
     setTasks(prev => prev.filter(t => t.id !== taskId))
   }
@@ -65,63 +99,101 @@ export default function ProjectDetail({ project, profile, onBack }) {
 
   return (
     <div>
-      <button onClick={onBack} style={{ background: 'none', border: 'none', color: 'var(--text2)', fontSize: 13, cursor: 'pointer', marginBottom: 20, padding: 0 }}>← Все проекты</button>
+      <button onClick={onBack} style={{ background: 'none', border: 'none', color: '#8fa3bb', fontSize: 13, fontWeight: 600, cursor: 'pointer', marginBottom: 20, padding: 0, fontFamily: 'Montserrat, sans-serif' }}>
+        ← Все проекты
+      </button>
 
-      <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '20px 24px', marginBottom: 20, boxShadow: 'var(--shadow)' }}>
+      {/* Project header */}
+      <div style={{ background: '#fff', border: '0.5px solid rgba(10,37,64,0.1)', borderRadius: 10, padding: '16px 20px', marginBottom: 16, boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', gap: 12, flexWrap: 'wrap' }}>
           <div>
-            <h1 style={{ fontSize: 20, fontWeight: 400, marginBottom: 4 }}>{project.name}</h1>
-            <p style={{ fontSize: 13, color: 'var(--text2)' }}>{project.description}</p>
-            {project.deadline && <p style={{ fontSize: 12, color: 'var(--text3)', marginTop: 4 }}>Дедлайн: {fmtDate(project.deadline)}</p>}
+            <h1 style={{ fontSize: 20, fontWeight: 600, color: '#0A2540', marginBottom: 4 }}>{project.name}</h1>
+            <p style={{ fontSize: 13, color: '#8fa3bb' }}>{project.description}</p>
+            {project.deadline && <p style={{ fontSize: 12, color: '#8fa3bb', marginTop: 4 }}>Дедлайн: {fmtDate(project.deadline)}</p>}
           </div>
           {canEdit && (
-            <button className="btn-primary" onClick={() => setShowForm(!showForm)} style={{ flexShrink: 0 }}>
+            <button
+              onClick={() => { setShowForm(!showForm); setDraftSteps([]) }}
+              style={{ background: '#1a6b8a', color: '#fff', border: 'none', borderRadius: 6, padding: '8px 14px', fontSize: 12, fontWeight: 700, cursor: 'pointer', flexShrink: 0, fontFamily: 'Montserrat, sans-serif' }}
+            >
               {showForm ? 'Отмена' : '+ Новая задача'}
             </button>
           )}
         </div>
       </div>
 
-      {showForm && (
-        <div style={{ background: 'var(--surface)', border: '1px solid var(--navy)', borderRadius: 'var(--radius)', padding: '20px 24px', marginBottom: 16, boxShadow: 'var(--shadow)' }}>
-          <h3 style={{ fontSize: 15, fontWeight: 500, marginBottom: 16 }}>Новая задача</h3>
+      {/* New task form */}
+      {showForm && canEdit && (
+        <div style={{ background: '#fff', border: '1.5px solid #1a6b8a', borderRadius: 10, padding: '20px', marginBottom: 16 }}>
+          <h3 style={{ fontSize: 14, fontWeight: 700, color: '#0A2540', marginBottom: 16 }}>Новая задача</h3>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            <div><label style={lbl}>Название</label><input value={form.title} onChange={e => setForm(f => ({ ...f, title: e.target.value }))} placeholder="Что нужно сделать?" /></div>
-            <div><label style={lbl}>Описание</label><textarea value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} placeholder="Подробности..." /></div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-              <div><label style={lbl}>Приоритет</label>
-                <select value={form.priority} onChange={e => setForm(f => ({ ...f, priority: e.target.value }))}>
-                  <option value="low">Низкий</option><option value="medium">Средний</option>
-                  <option value="high">Высокий</option><option value="critical">Критический</option>
-                </select>
-              </div>
-              <div><label style={lbl}>Дедлайн</label><input type="date" value={form.deadline} onChange={e => setForm(f => ({ ...f, deadline: e.target.value }))} /></div>
+            <div>
+              <label style={lbl}>Название задачи</label>
+              <input value={form.title} onChange={e => setForm(f => ({ ...f, title: e.target.value }))} placeholder="Что нужно сделать?" style={inp} />
             </div>
             <div>
-              <label style={lbl}>Шаги</label>
+              <label style={lbl}>Описание</label>
+              <textarea value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} placeholder="Подробности..." style={{ ...inp, minHeight: 72, resize: 'vertical' }} />
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <div>
+                <label style={lbl}>Приоритет</label>
+                <select value={form.priority} onChange={e => setForm(f => ({ ...f, priority: e.target.value }))} style={inp}>
+                  <option value="low">Низкий</option>
+                  <option value="medium">Средний</option>
+                  <option value="high">Высокий</option>
+                  <option value="critical">Критический</option>
+                </select>
+              </div>
+              <div>
+                <label style={lbl}>Дедлайн</label>
+                <input type="date" value={form.deadline} onChange={e => setForm(f => ({ ...f, deadline: e.target.value }))} style={inp} />
+              </div>
+            </div>
+            <div>
+              <label style={lbl}>Исполнитель</label>
+              <select value={form.assignee_id} onChange={e => setForm(f => ({ ...f, assignee_id: e.target.value }))} style={inp}>
+                <option value="">— Выберите исполнителя —</option>
+                {managers.map(m => <option key={m.id} value={m.id}>{m.full_name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={lbl}>Шаги выполнения</label>
               {draftSteps.map((s, i) => (
                 <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                  <span style={{ fontSize: 13, flex: 1 }}>• {s}</span>
-                  <button className="btn-danger" onClick={() => setDraftSteps(p => p.filter((_, j) => j !== i))} style={{ padding: '2px 7px', fontSize: 11 }}>✕</button>
+                  <span style={{ fontSize: 13, flex: 1, color: '#0A2540' }}>• {s}</span>
+                  <button onClick={() => setDraftSteps(p => p.filter((_, j) => j !== i))} style={{ background: '#fee2e2', color: '#991b1b', border: 'none', borderRadius: 4, padding: '2px 7px', fontSize: 11, cursor: 'pointer' }}>✕</button>
                 </div>
               ))}
               <div style={{ display: 'flex', gap: 8 }}>
-                <input value={stepInput} onChange={e => setStepInput(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') { setDraftSteps(p => [...p, stepInput.trim()]); setStepInput('') } }} placeholder="Добавить шаг..." style={{ flex: 1 }} />
-                <button className="btn-ghost" onClick={() => { if (stepInput.trim()) { setDraftSteps(p => [...p, stepInput.trim()]); setStepInput('') } }}>+</button>
+                <input
+                  value={stepInput}
+                  onChange={e => setStepInput(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') { if (stepInput.trim()) { setDraftSteps(p => [...p, stepInput.trim()]); setStepInput('') } } }}
+                  placeholder="Добавить шаг..."
+                  style={{ ...inp, flex: 1 }}
+                />
+                <button onClick={() => { if (stepInput.trim()) { setDraftSteps(p => [...p, stepInput.trim()]); setStepInput('') } }} style={{ background: 'transparent', color: '#4a6080', border: '0.5px solid rgba(10,37,64,0.2)', borderRadius: 6, padding: '7px 12px', fontSize: 13, cursor: 'pointer' }}>+</button>
               </div>
             </div>
             <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
-              <button className="btn-ghost" onClick={() => setShowForm(false)}>Отмена</button>
-              <button className="btn-primary" onClick={createTask} disabled={saving}>{saving ? 'Сохранение...' : 'Назначить задачу'}</button>
+              <button onClick={() => { setShowForm(false); setDraftSteps([]) }} style={{ background: 'transparent', color: '#4a6080', border: '0.5px solid rgba(10,37,64,0.2)', borderRadius: 6, padding: '7px 12px', fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'Montserrat, sans-serif' }}>Отмена</button>
+              <button onClick={createTask} disabled={saving} style={{ background: '#1a6b8a', color: '#fff', border: 'none', borderRadius: 6, padding: '8px 16px', fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: 'Montserrat, sans-serif' }}>
+                {saving ? 'Сохранение...' : 'Назначить задачу'}
+              </button>
             </div>
           </div>
         </div>
       )}
 
+      {/* Tasks */}
       {loading ? (
-        <div style={{ color: 'var(--text3)', fontSize: 14, textAlign: 'center', paddingTop: 40 }}>Загрузка...</div>
+        <div style={{ color: '#8fa3bb', fontSize: 14, textAlign: 'center', paddingTop: 40 }}>Загрузка задач...</div>
       ) : tasks.length === 0 ? (
-        <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: 40, textAlign: 'center', color: 'var(--text3)', fontSize: 14 }}>Задач пока нет</div>
+        <div style={{ background: '#fff', border: '0.5px solid rgba(10,37,64,0.1)', borderRadius: 10, padding: 40, textAlign: 'center' }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: '#0A2540', marginBottom: 6 }}>Задач пока нет</div>
+          <div style={{ fontSize: 12, color: '#8fa3bb' }}>{canEdit ? 'Нажмите «Новая задача» чтобы добавить' : 'Руководитель ещё не назначил задачи'}</div>
+        </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           {tasks.map(task => (
@@ -134,7 +206,7 @@ export default function ProjectDetail({ project, profile, onBack }) {
               onToggle={() => setExpandedTask(expandedTask === task.id ? null : task.id)}
               onToggleStep={toggleStep}
               onDelete={deleteTask}
-              onRefresh={loadTasks}
+              onAddComment={addComment}
             />
           ))}
         </div>
@@ -143,125 +215,84 @@ export default function ProjectDetail({ project, profile, onBack }) {
   )
 }
 
-function TaskCard({ task, profile, canEdit, expanded, onToggle, onToggleStep, onDelete, onRefresh }) {
+function TaskCard({ task, profile, canEdit, expanded, onToggle, onToggleStep, onDelete, onAddComment }) {
   const p = PRI[task.priority] || PRI.medium
-  const doneSteps = (task.steps || []).filter(s => s.done).length
-  const totalSteps = (task.steps || []).length
+  const steps = task.steps || []
+  const doneSteps = steps.filter(s => s.done).length
   const [comment, setComment] = useState('')
-  const [posting, setPosting] = useState(false)
-  const [uploading, setUploading] = useState(false)
-  const fileRef = useRef()
-
-  async function postComment() {
-    if (!comment.trim()) return
-    setPosting(true)
-    await supabase.from('comments').insert({ task_id: task.id, author_id: profile.id, body: comment.trim() })
-    setComment(''); setPosting(false); onRefresh()
-  }
-
-  async function uploadFile(e) {
-    const file = e.target.files[0]
-    if (!file) return
-    setUploading(true)
-    const path = `${task.id}/${Date.now()}_${file.name}`
-    const { error } = await supabase.storage.from('task-files').upload(path, file)
-    if (!error) {
-      const { data: { publicUrl } } = supabase.storage.from('task-files').getPublicUrl(path)
-      await supabase.from('files').insert({ task_id: task.id, name: file.name, url: publicUrl, uploaded_by: profile.id })
-      onRefresh()
-    }
-    setUploading(false)
-  }
-
-  async function deleteFile(fileId) {
-    await supabase.from('files').delete().eq('id', fileId)
-    onRefresh()
-  }
+  const assigneeName = task.assignee?.full_name || '—'
 
   return (
-    <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', boxShadow: 'var(--shadow)', overflow: 'hidden' }}>
-      {/* Header — always visible */}
-      <div style={{ padding: '16px 20px', cursor: 'pointer' }} onClick={onToggle}>
+    <div style={{ background: '#fff', border: '0.5px solid rgba(10,37,64,0.1)', borderRadius: 10, overflow: 'hidden', boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
+      {/* Header */}
+      <div style={{ padding: '14px 18px', cursor: 'pointer' }} onClick={onToggle}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', gap: 10 }}>
-          <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ flex: 1 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 4 }}>
-              <span style={{ fontSize: 15, fontWeight: 500 }}>{task.title}</span>
-              <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 4, fontWeight: 500, background: p.bg, color: p.color, flexShrink: 0 }}>{p.label}</span>
+              <span style={{ fontSize: 14, fontWeight: 600, color: '#0A2540' }}>{task.title}</span>
+              <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 4, fontWeight: 700, background: p.bg, color: p.color }}>{p.label}</span>
             </div>
-            <div style={{ display: 'flex', gap: 14, fontSize: 12, color: 'var(--text3)', flexWrap: 'wrap' }}>
-              {task.profiles?.full_name && <span>{task.profiles.full_name}</span>}
-              {task.deadline && <span>до {fmtDate(task.deadline)}</span>}
-              {totalSteps > 0 && <span>{doneSteps}/{totalSteps} шагов</span>}
+            <div style={{ display: 'flex', gap: 14, fontSize: 12, color: '#8fa3bb', flexWrap: 'wrap' }}>
+              <span>Исполнитель: <b style={{ color: '#4a6080' }}>{assigneeName}</b></span>
+              {task.deadline && <span>До: {fmtDate(task.deadline)}</span>}
+              {steps.length > 0 && <span>{doneSteps}/{steps.length} шагов</span>}
               {(task.comments || []).length > 0 && <span>💬 {task.comments.length}</span>}
-              {(task.files || []).length > 0 && <span>📎 {task.files.length}</span>}
             </div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
             {canEdit && (
-              <button className="btn-danger" onClick={e => { e.stopPropagation(); onDelete(task.id) }} style={{ fontSize: 11, padding: '4px 8px' }}>Удалить</button>
+              <button onClick={e => { e.stopPropagation(); onDelete(task.id) }} style={{ background: '#fee2e2', color: '#991b1b', border: 'none', borderRadius: 4, padding: '4px 8px', fontSize: 11, cursor: 'pointer' }}>Удалить</button>
             )}
-            <span style={{ color: 'var(--text3)', fontSize: 12 }}>{expanded ? '▲' : '▼'}</span>
+            <span style={{ color: '#8fa3bb', fontSize: 11 }}>{expanded ? '▲' : '▼'}</span>
           </div>
         </div>
-        {totalSteps > 0 && (
-          <div style={{ height: 3, background: 'var(--bg)', borderRadius: 99, marginTop: 10, overflow: 'hidden' }}>
-            <div style={{ height: '100%', borderRadius: 99, background: doneSteps === totalSteps ? 'var(--green)' : 'var(--navy)', width: Math.round(doneSteps / totalSteps * 100) + '%', transition: 'width 0.3s' }} />
+        {steps.length > 0 && (
+          <div style={{ height: 3, background: '#f1f5f9', borderRadius: 99, marginTop: 10, overflow: 'hidden' }}>
+            <div style={{ height: '100%', borderRadius: 99, background: doneSteps === steps.length ? '#1a9e6e' : '#1a6b8a', width: Math.round(doneSteps / steps.length * 100) + '%', transition: 'width 0.3s' }} />
           </div>
         )}
       </div>
 
-      {/* Expanded body */}
+      {/* Expanded */}
       {expanded && (
-        <div style={{ borderTop: '1px solid var(--border)', padding: '16px 20px' }}>
-          {task.description && <p style={{ fontSize: 13, color: 'var(--text2)', marginBottom: 16 }}>{task.description}</p>}
+        <div style={{ borderTop: '0.5px solid rgba(10,37,64,0.07)', padding: '14px 18px', background: '#fafbfc' }}>
+          {task.description && <p style={{ fontSize: 13, color: '#4a6080', marginBottom: 14, lineHeight: 1.6 }}>{task.description}</p>}
 
           {/* Steps */}
-          {task.steps?.length > 0 && (
-            <div style={{ marginBottom: 20 }}>
-              <div style={{ fontSize: 12, fontWeight: 500, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>Шаги</div>
-              {task.steps.sort((a, b) => a.order - b.order).map(step => (
-                <label key={step.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 0', cursor: 'pointer', fontSize: 13, color: step.done ? 'var(--text3)' : 'var(--text)', textDecoration: step.done ? 'line-through' : 'none' }}>
-                  <input type="checkbox" checked={step.done} onChange={() => onToggleStep(step.id, step.done)} style={{ width: 16, height: 16, cursor: 'pointer', accentColor: 'var(--navy)', flexShrink: 0 }} />
+          {steps.length > 0 && (
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 10, fontWeight: 700, color: '#8fa3bb', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>Шаги выполнения</div>
+              {steps.sort((a, b) => a.order - b.order).map(step => (
+                <label key={step.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '5px 0', cursor: 'pointer', fontSize: 13, color: step.done ? '#8fa3bb' : '#0A2540', textDecoration: step.done ? 'line-through' : 'none' }}>
+                  <input type="checkbox" checked={step.done} onChange={() => onToggleStep(step.id, step.done)} style={{ width: 15, height: 15, cursor: 'pointer', accentColor: '#1a6b8a', flexShrink: 0 }} />
                   {step.title}
                 </label>
               ))}
             </div>
           )}
 
-          {/* Files */}
-          <div style={{ marginBottom: 20 }}>
-            <div style={{ fontSize: 12, fontWeight: 500, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>Файлы</div>
-            {(task.files || []).map(f => (
-              <div key={f.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0', borderBottom: '1px solid var(--border)' }}>
-                <span style={{ fontSize: 16 }}>📎</span>
-                <a href={f.url} target="_blank" rel="noreferrer" style={{ fontSize: 13, color: 'var(--blue)', flex: 1, textDecoration: 'none' }}>{f.name}</a>
-                {canEdit && <button className="btn-danger" onClick={() => deleteFile(f.id)} style={{ fontSize: 11, padding: '2px 6px' }}>✕</button>}
-              </div>
-            ))}
-            <div style={{ marginTop: 8 }}>
-              <input type="file" ref={fileRef} onChange={uploadFile} style={{ display: 'none' }} />
-              <button className="btn-ghost" onClick={() => fileRef.current.click()} disabled={uploading} style={{ fontSize: 12, padding: '6px 12px' }}>
-                {uploading ? 'Загрузка...' : '+ Прикрепить файл'}
-              </button>
-            </div>
-          </div>
-
           {/* Comments */}
           <div>
-            <div style={{ fontSize: 12, fontWeight: 500, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>Комментарии</div>
+            <div style={{ fontSize: 10, fontWeight: 700, color: '#8fa3bb', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>Комментарии</div>
             {(task.comments || []).sort((a, b) => new Date(a.created_at) - new Date(b.created_at)).map(c => (
-              <div key={c.id} style={{ marginBottom: 10, padding: '10px 12px', background: 'var(--bg)', borderRadius: 8 }}>
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4 }}>
-                  <span style={{ fontSize: 12, fontWeight: 500 }}>{c.profiles?.full_name || 'Пользователь'}</span>
-                  <span style={{ fontSize: 11, color: 'var(--text3)' }}>{fmtDateTime(c.created_at)}</span>
-                </div>
-                <p style={{ fontSize: 13, color: 'var(--text)', lineHeight: 1.5 }}>{c.body}</p>
+              <div key={c.id} style={{ background: '#f4f6f9', borderRadius: 6, padding: '8px 10px', marginBottom: 6 }}>
+                <div style={{ fontSize: 10, fontWeight: 700, color: '#0A2540', marginBottom: 2 }}>{c.author?.full_name || 'Пользователь'}</div>
+                <div style={{ fontSize: 12, color: '#4a6080', lineHeight: 1.5 }}>{c.body}</div>
               </div>
             ))}
             <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-              <input value={comment} onChange={e => setComment(e.target.value)} onKeyDown={e => e.key === 'Enter' && postComment()} placeholder="Написать комментарий..." style={{ flex: 1 }} />
-              <button className="btn-primary" onClick={postComment} disabled={posting || !comment.trim()} style={{ flexShrink: 0 }}>
-                {posting ? '...' : 'Отправить'}
+              <input
+                value={comment}
+                onChange={e => setComment(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter' && comment.trim()) { onAddComment(task.id, comment); setComment('') } }}
+                placeholder="Написать комментарий..."
+                style={{ flex: 1, padding: '7px 10px', border: '0.5px solid rgba(10,37,64,0.15)', borderRadius: 5, fontSize: 12, fontFamily: 'Montserrat, sans-serif', outline: 'none' }}
+              />
+              <button
+                onClick={() => { if (comment.trim()) { onAddComment(task.id, comment); setComment('') } }}
+                style={{ background: '#1a6b8a', color: '#fff', border: 'none', borderRadius: 5, padding: '0 12px', fontSize: 11, fontWeight: 700, cursor: 'pointer', flexShrink: 0, fontFamily: 'Montserrat, sans-serif' }}
+              >
+                Отправить
               </button>
             </div>
           </div>
@@ -271,11 +302,11 @@ function TaskCard({ task, profile, canEdit, expanded, onToggle, onToggleStep, on
   )
 }
 
-const lbl = { fontSize: 12, color: 'var(--text2)', display: 'block', marginBottom: 5, fontWeight: 500 }
+const lbl = { fontSize: 11, color: '#8fa3bb', display: 'block', marginBottom: 5, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }
+const inp = { width: '100%', padding: '8px 11px', border: '1.5px solid rgba(10,37,64,0.15)', borderRadius: 6, fontSize: 12, color: '#0A2540', background: '#f9fafb', fontFamily: 'Montserrat, sans-serif', outline: 'none', boxSizing: 'border-box' }
 
-function fmtDate(d) { if (!d) return ''; const [y, m, dd] = d.split('-'); return `${dd}.${m}.${y}` }
-function fmtDateTime(d) {
+function fmtDate(d) {
   if (!d) return ''
-  const dt = new Date(d)
-  return dt.toLocaleDateString('ru', { day: '2-digit', month: '2-digit' }) + ' ' + dt.toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })
+  const [y, m, dd] = d.split('-')
+  return `${dd}.${m}.${y}`
 }
